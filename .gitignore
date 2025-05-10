@@ -1,0 +1,8 @@
+.venv/
+venv/
+__pycache__/
+# Ignore all model files
+models/
+*.pt
+*.bin
+*.safetensors
