@@ -1,4 +1,4 @@
-# Real-Time Audio Processing API
+# 🚀 Real-Time Audio Processing API
 
 A FastAPI-based real-time audio processing system for live customer calls that performs speaker diarization, transcription, and sentiment analysis.
 
