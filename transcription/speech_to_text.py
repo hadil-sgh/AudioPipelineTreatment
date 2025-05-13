@@ -7,6 +7,7 @@ import asyncio
 from queue import Queue
 import json
 import gc
+from difflib import SequenceMatcher
 
 class SpeechToText:
     def __init__(
@@ -15,10 +16,12 @@ class SpeechToText:
         buffer_size: int = 1024,
         model_size: str = "base.en",
         device: str = "cuda",
-        compute_type: str = "float16"
+        compute_type: str = "float16",
+        overlap_ratio: float = 0.5  # 50% overlap between chunks
     ):
         self.sample_rate = sample_rate
         self.buffer_size = buffer_size
+        self.overlap_ratio = overlap_ratio
         
         # Initialize Whisper model
         self.model = WhisperModel(
@@ -31,6 +34,7 @@ class SpeechToText:
         # Buffer for accumulating audio
         self.audio_buffer = []
         self.transcription_buffer = []
+        self.last_transcription = ""
         self.is_processing = False
         
         # Set GPU memory management if using CUDA
@@ -49,6 +53,22 @@ class SpeechToText:
         audio = audio / np.max(np.abs(audio))
         
         return audio
+
+    def _stitch_transcriptions(self, new_transcription: str) -> str:
+        """Stitch overlapping transcriptions using text similarity"""
+        if not self.last_transcription:
+            return new_transcription
+            
+        # Find the best overlap point
+        matcher = SequenceMatcher(None, self.last_transcription, new_transcription)
+        match = matcher.find_longest_match(0, len(self.last_transcription), 0, len(new_transcription))
+        
+        if match.size > 10:  # Minimum overlap threshold
+            # Stitch at the overlap point
+            return self.last_transcription[:match.a] + new_transcription[match.b:]
+        else:
+            # No significant overlap, append with space
+            return self.last_transcription + " " + new_transcription
 
     async def process_audio(self, audio_chunk: np.ndarray):
         """Process incoming audio chunk"""
@@ -79,11 +99,15 @@ class SpeechToText:
                 # Get the transcription
                 transcription = " ".join([segment.text for segment in segments])
                 
-                if transcription.strip():  # Only add non-empty transcriptions
-                    self.transcription_buffer.append(transcription)
+                if transcription.strip():  # Only process non-empty transcriptions
+                    # Stitch with previous transcription
+                    stitched_transcription = self._stitch_transcriptions(transcription)
+                    self.transcription_buffer.append(stitched_transcription)
+                    self.last_transcription = stitched_transcription
                 
-                # Clear audio buffer
-                self.audio_buffer = []
+                # Keep overlap for next chunk
+                overlap_samples = int(len(self.audio_buffer) * self.overlap_ratio)
+                self.audio_buffer = self.audio_buffer[-overlap_samples:]
                 
                 # Clear GPU memory
                 if torch.cuda.is_available():
@@ -109,6 +133,7 @@ class SpeechToText:
         """Reset the transcription state"""
         self.audio_buffer = []
         self.transcription_buffer = []
+        self.last_transcription = ""
         self.is_processing = False
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

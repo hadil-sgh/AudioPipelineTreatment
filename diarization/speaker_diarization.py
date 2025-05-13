@@ -2,11 +2,36 @@ import numpy as np
 from typing import List, Tuple, Optional
 import torch
 import torchaudio
-from transformers import Wav2Vec2Processor, Wav2Vec2Model
+import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.cluster import AgglomerativeClustering
 import librosa
 import asyncio
 from queue import Queue
+import gc
+
+class ECAPA_TDNN(nn.Module):
+    def __init__(self, input_size=80, channels=512, emb_dim=192):
+        super(ECAPA_TDNN, self).__init__()
+        self.conv1 = nn.Conv1d(input_size, channels, kernel_size=5, dilation=1)
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, dilation=2)
+        self.conv3 = nn.Conv1d(channels, channels, kernel_size=3, dilation=3)
+        self.conv4 = nn.Conv1d(channels*3, channels, kernel_size=1)
+        self.conv5 = nn.Conv1d(channels, emb_dim, kernel_size=1)
+        
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        
+        # Multi-scale feature fusion
+        x = torch.cat([x, x.mean(dim=2, keepdim=True).expand_as(x)], dim=1)
+        x = F.relu(self.conv4(x))
+        x = self.conv5(x)
+        
+        # Global pooling
+        x = torch.mean(x, dim=2)
+        return F.normalize(x, p=2, dim=1)
 
 class SpeakerDiarization:
     def __init__(
@@ -14,20 +39,27 @@ class SpeakerDiarization:
         sample_rate: int = 16000,
         min_speech_duration: float = 0.5,
         min_silence_duration: float = 0.5,
-        threshold: float = 0.5
+        threshold: float = 0.5,
+        n_speakers: int = 2
     ):
         self.sample_rate = sample_rate
         self.min_speech_duration = min_speech_duration
         self.min_silence_duration = min_silence_duration
         self.threshold = threshold
+        self.n_speakers = n_speakers
         
-        # Initialize Wav2Vec2 model for speaker embeddings
-        self.processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
-        self.model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h")
-        
-        # Move model to GPU if available
+        # Initialize ECAPA-TDNN model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = self.model.to(self.device)
+        self.model = ECAPA_TDNN().to(self.device)
+        self.model.eval()
+        
+        # Initialize mel spectrogram
+        self.mel_transform = torchaudio.transforms.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_fft=1024,
+            hop_length=512,
+            n_mels=80
+        ).to(self.device)
         
         # Buffer for accumulating audio
         self.audio_buffer = []
@@ -36,35 +68,32 @@ class SpeakerDiarization:
         
         # Clustering model
         self.clustering = AgglomerativeClustering(
-            n_clusters=2,
+            n_clusters=n_speakers,
             metric='cosine',
             linkage='average'
         )
+        
+        # Set GPU memory management
+        if self.device == "cuda":
+            torch.cuda.set_per_process_memory_fraction(0.7)
+            torch.backends.cudnn.benchmark = True
+            torch.cuda.empty_cache()
 
     def _extract_features(self, audio: np.ndarray) -> np.ndarray:
-        """Extract speaker embeddings using Wav2Vec2"""
-        # Convert numpy array to torch tensor
-        audio_tensor = torch.from_numpy(audio).float()
+        """Extract speaker embeddings using ECAPA-TDNN"""
+        # Convert to torch tensor
+        audio_tensor = torch.from_numpy(audio).float().to(self.device)
         
         # Add batch dimension if needed
         if len(audio_tensor.shape) == 1:
             audio_tensor = audio_tensor.unsqueeze(0)
         
-        # Move to device
-        audio_tensor = audio_tensor.to(self.device)
-        
-        # Extract features
-        inputs = self.processor(
-            audio_tensor,
-            sampling_rate=self.sample_rate,
-            return_tensors="pt",
-            padding=True
-        ).to(self.device)
+        # Compute mel spectrogram
+        mel_spec = self.mel_transform(audio_tensor)
         
         # Get embeddings
         with torch.no_grad():
-            outputs = self.model(**inputs)
-            embeddings = torch.mean(outputs.last_hidden_state, dim=1)
+            embeddings = self.model(mel_spec)
         
         return embeddings.cpu().numpy()
 
@@ -108,17 +137,23 @@ class SpeakerDiarization:
             self.audio_buffer = []
             
             # Update speaker labels if we have enough embeddings
-            if len(self.speaker_embeddings) >= 2:
+            if len(self.speaker_embeddings) >= self.n_speakers:
                 self._update_speaker_labels()
+                
+            # Clear GPU memory
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+                gc.collect()
 
     def _update_speaker_labels(self):
         """Update speaker labels using clustering"""
-        if len(self.speaker_embeddings) < 2:
+        if len(self.speaker_embeddings) < self.n_speakers:
             return
         
         # Perform clustering
-        labels = self.clustering.fit_predict(self.speaker_embeddings)
-        self.speaker_labels = labels
+        embeddings = np.vstack(self.speaker_embeddings)
+        labels = self.clustering.fit_predict(embeddings)
+        self.speaker_labels = labels.tolist()
 
     def get_current_speaker(self) -> Optional[int]:
         """Get the current speaker label"""
@@ -131,6 +166,15 @@ class SpeakerDiarization:
         self.audio_buffer = []
         self.speaker_embeddings = []
         self.speaker_labels = []
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+            gc.collect()
+
+    def __del__(self):
+        """Cleanup when object is destroyed"""
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+            gc.collect()
 
 # Example usage
 if __name__ == "__main__":
