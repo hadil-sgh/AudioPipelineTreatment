@@ -6,3 +6,5 @@ models/
 *.pt
 *.bin
 *.safetensors
+.wav
+.whl
