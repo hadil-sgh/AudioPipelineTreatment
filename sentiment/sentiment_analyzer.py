@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Dict
-import torch
+import torch_test
 import torchaudio
 from transformers import (
     AutoModelForSequenceClassification,
@@ -26,11 +26,11 @@ class SentimentAnalyzer:
         self.voice_processor = None
         self.voice_model = None
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if torch_test.cuda.is_available() else "cpu"
         if self.device == "cuda":
-            torch.cuda.set_per_process_memory_fraction(0.7)
-            torch.backends.cudnn.benchmark = True
-            torch.cuda.empty_cache()
+            torch_test.cuda.set_per_process_memory_fraction(0.7)
+            torch_test.backends.cudnn.benchmark = True
+            torch_test.cuda.empty_cache()
 
         self.sample_rate = 16000
         self.hop_length = 512
@@ -50,17 +50,17 @@ class SentimentAnalyzer:
         self.load_text_model()
         try:
             inputs = self.text_tokenizer(text, return_tensors="pt", truncation=True, max_length=512).to(self.device)
-            with torch.no_grad():
+            with torch_test.no_grad():
                 outputs = self.text_model(**inputs)
-                scores = torch.softmax(outputs.logits, dim=1)
+                scores = torch_test.softmax(outputs.logits, dim=1)
 
-            emotion_idx = torch.argmax(scores).item()
+            emotion_idx = torch_test.argmax(scores).item()
             emotion = self.text_model.config.id2label[emotion_idx]
             score = scores[0][emotion_idx].item()
 
             if self.device == "cuda":
                 del inputs, outputs, scores
-                torch.cuda.empty_cache()
+                torch_test.cuda.empty_cache()
                 gc.collect()
 
             return {"emotion": emotion, "score": score}
@@ -71,14 +71,14 @@ class SentimentAnalyzer:
     def analyze_voice(self, audio: np.ndarray) -> Dict:
         self.load_voice_model()
         try:
-            audio_tensor = torch.from_numpy(audio).float()
+            audio_tensor = torch_test.from_numpy(audio).float()
             inputs = self.voice_processor(audio_tensor, sampling_rate=self.sample_rate, return_tensors="pt").to(self.device)
 
-            with torch.no_grad():
+            with torch_test.no_grad():
                 outputs = self.voice_model(**inputs)
-                scores = torch.softmax(outputs.logits, dim=1)
+                scores = torch_test.softmax(outputs.logits, dim=1)
 
-            emotion_idx = torch.argmax(scores).item()
+            emotion_idx = torch_test.argmax(scores).item()
             emotion = self.voice_model.config.id2label[emotion_idx]
             score = scores[0][emotion_idx].item()
 
@@ -86,7 +86,7 @@ class SentimentAnalyzer:
 
             if self.device == "cuda":
                 del inputs, outputs, scores
-                torch.cuda.empty_cache()
+                torch_test.cuda.empty_cache()
                 gc.collect()
 
             return {"emotion": emotion, "score": score, "features": features}
@@ -119,5 +119,5 @@ class SentimentAnalyzer:
 
     def __del__(self):
         if self.device == "cuda":
-            torch.cuda.empty_cache()
+            torch_test.cuda.empty_cache()
             gc.collect()

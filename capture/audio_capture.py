@@ -1,4 +1,4 @@
-# audio_capture.py (modified for your pipeline)
+# audio_capture.py 
 import asyncio
 import sounddevice as sd
 import numpy as np
@@ -34,15 +34,21 @@ class AudioCapture:
     def _validate_device(self):
         """Validate and adjust device settings"""
         try:
-            device_info = sd.query_devices(self.device_index)
+            # If device_index is None, use default input device
+            index = self.device_index or sd.default.device[0]
+            device_info = sd.query_devices(index)
+
             if device_info['max_input_channels'] < self.channels:
                 logger.warning(f"Device only supports {device_info['max_input_channels']} channels, adjusting...")
                 self.channels = device_info['max_input_channels']
-            
-            # Ensure sample rate is supported
-            if self.sample_rate not in device_info['default_samplerate']:
+
+            if self.sample_rate != int(device_info['default_samplerate']):
                 logger.warning(f"Device default sample rate is {device_info['default_samplerate']}, adjusting...")
                 self.sample_rate = int(device_info['default_samplerate'])
+
+            # Store updated device index in case we used default
+            self.device_index = index
+
         except Exception as e:
             logger.error(f"Error validating device: {e}")
             raise
@@ -60,7 +66,7 @@ class AudioCapture:
                 device=self.device_index,
                 callback=self._audio_callback,
                 dtype='float32',
-                latency='low'  # Minimize latency
+                latency='low'
             )
             self.stream.start()
             self.is_capturing = True
@@ -80,10 +86,10 @@ class AudioCapture:
                 audio_data = np.mean(indata, axis=1)
             else:
                 audio_data = indata.flatten()
-            
-            # Apply basic preprocessing
+
+            # Apply preprocessing
             audio_data = self._preprocess_audio(audio_data)
-            
+
             # Add to queue with timeout
             self.audio_queue.put(audio_data, timeout=0.1)
         except queue.Full:
@@ -93,38 +99,27 @@ class AudioCapture:
 
     def _preprocess_audio(self, audio: np.ndarray) -> np.ndarray:
         """Basic audio preprocessing"""
-        # Normalize
         if np.max(np.abs(audio)) > 0:
             audio = audio / np.max(np.abs(audio))
-        
-        # Remove DC offset
         audio = audio - np.mean(audio)
-        
         return audio
 
     def get_audio_chunk(self, min_samples: int = 16000) -> Optional[np.ndarray]:
-        """
-        Get audio chunk with minimum sample requirement
-        Returns numpy array of shape (samples,)
-        """
+        """Get audio chunk with minimum sample requirement"""
         if not self.is_capturing:
             return None
 
         with self.lock:
-            # Buffer until we have enough samples
             while self.audio_queue.qsize() > 0:
                 try:
                     chunk = self.audio_queue.get_nowait()
-                    self.audio_buffer = np.concatenate(
-                        (self.audio_buffer, chunk)
-                    )
+                    self.audio_buffer = np.concatenate((self.audio_buffer, chunk))
                 except queue.Empty:
                     break
 
             if len(self.audio_buffer) < min_samples:
                 return None
 
-            # Extract chunk and maintain buffer
             chunk = self.audio_buffer[:min_samples]
             self.audio_buffer = self.audio_buffer[min_samples:]
             return chunk
