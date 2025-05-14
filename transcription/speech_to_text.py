@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Optional, List, Dict
-import torch_test
+import torch
 import torchaudio
 from faster_whisper import WhisperModel
 import asyncio
@@ -39,9 +39,9 @@ class SpeechToText:
         
         # Set GPU memory management if using CUDA
         if device == "cuda":
-            torch_test.cuda.set_per_process_memory_fraction(0.7)
-            torch_test.backends.cudnn.benchmark = True
-            torch_test.cuda.empty_cache()
+            torch.cuda.set_per_process_memory_fraction(0.7)
+            torch.backends.cudnn.benchmark = True
+            torch.cuda.empty_cache()
 
     def _preprocess_audio(self, audio: np.ndarray) -> np.ndarray:
         """Preprocess audio for the model"""
@@ -110,8 +110,8 @@ class SpeechToText:
                 self.audio_buffer = self.audio_buffer[-overlap_samples:]
                 
                 # Clear GPU memory
-                if torch_test.cuda.is_available():
-                    torch_test.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                     gc.collect()
                 
             except Exception as e:
@@ -135,14 +135,14 @@ class SpeechToText:
         self.transcription_buffer = []
         self.last_transcription = ""
         self.is_processing = False
-        if torch_test.cuda.is_available():
-            torch_test.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
             gc.collect()
 
     def __del__(self):
         """Cleanup when object is destroyed"""
-        if torch_test.cuda.is_available():
-            torch_test.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
             gc.collect()
 
 # Example usage
