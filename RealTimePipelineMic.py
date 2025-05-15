@@ -5,109 +5,85 @@ import numpy as np
 import signal
 import torch
 import torchaudio
-import io
-import contextlib
 
 from capture.audio_capture import AudioCapture
 from transcription.speech_to_text import SpeechToText
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 1) Configure logging to file only
-# ──────────────────────────────────────────────────────────────────────────────
+# ————————————————————————————————————————————————————————————————————————
+# 1) Route all logs to file (pipeline.log); only transcripts print to console
+# ————————————————————————————————————————————————————————————————————————
 LOG_FILE = "pipeline.log"
-
-file_handler = logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")
-file_handler.setLevel(logging.DEBUG)
-file_handler.setFormatter(logging.Formatter(
-    "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-))
-
-root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG)
-root_logger.addHandler(file_handler)
-
-# remove any console handlers so nothing logs to stdout
-for h in list(root_logger.handlers):
+fh = logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")
+fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s"))
+logging.getLogger().setLevel(logging.DEBUG)
+logging.getLogger().addHandler(fh)
+# remove default console log handlers
+for h in list(logging.getLogger().handlers):
     if isinstance(h, logging.StreamHandler):
-        root_logger.removeHandler(h)
+        logging.getLogger().removeHandler(h)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 2) Real‑time pipeline
-# ──────────────────────────────────────────────────────────────────────────────
+# ————————————————————————————————————————————————————————————————————————
+# 2) Real‑time pipeline without echo
+# ————————————————————————————————————————————————————————————————————————
 async def main():
-    # 2.1) Instantiate capture and STT
-    #    wrap capture startup in redirect_stdout to swallow its print()s
-    with contextlib.redirect_stdout(io.StringIO()):
-        audio_cap = AudioCapture()
-        await audio_cap.start()
+    # 2.1 Initialize capture and STT
+    audio_cap = AudioCapture()
+    await audio_cap.start()
+    device_sr = audio_cap.sample_rate
 
-    DEVICE_SR = audio_cap.sample_rate
-    TARGET_SR = 16000
+    # resample to 16 kHz (model’s expected rate)
+    target_sr = 16_000
+    resampler = torchaudio.transforms.Resample(device_sr, target_sr)
+    stt = SpeechToText(sample_rate=target_sr)
 
-    # 2.2) Set up resampler & STT
-    resampler = torchaudio.transforms.Resample(orig_freq=DEVICE_SR, new_freq=TARGET_SR)
-    stt = SpeechToText(sample_rate=TARGET_SR)
+    # optional: save to WAV
+    wav = wave.open("output.wav", "wb")
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(target_sr)
 
-    # 2.3) (Optional) open WAV for saving
-    wav_file = wave.open("output.wav", "wb")
-    wav_file.setnchannels(1)
-    wav_file.setsampwidth(2)
-    wav_file.setframerate(TARGET_SR)
-
-    # 2.4) Graceful shutdown via Ctrl+C
-    stop_flag = False
+    stop = False
     def on_sigint(sig, frame):
-        nonlocal stop_flag
-        stop_flag = True
+        nonlocal stop
+        stop = True
     signal.signal(signal.SIGINT, on_sigint)
 
-    # 2.5) Tell user we’re live (only this print goes to console)
-    print("[Transcription] Pipeline started. Speak now…")
-
-    # rolling buffer for 2s windows
-    buffer = np.zeros((0,), dtype=np.float32)
-    WINDOW_SAMPLES = TARGET_SR * 2
+    print("[Transcription] Started — press Ctrl+C to stop")
 
     try:
-        while not stop_flag:
-            chunk = audio_cap.get_audio_chunk(min_samples=1024)
+        while not stop:
+            # grab 1 s of raw audio (or whatever min_samples you choose)
+            chunk = audio_cap.get_audio_chunk(min_samples=target_sr)
             if chunk is None:
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.05)
                 continue
 
-            # cast & resample
-            chunk = chunk.astype(np.float32) if chunk.dtype != np.float32 else chunk
+            # 2.2 Resample & normalize
+            if chunk.dtype != np.float32:
+                chunk = chunk.astype(np.float32)
             tensor = torch.from_numpy(chunk).unsqueeze(0)
-            tensor16 = resampler(tensor).squeeze(0).numpy()
+            audio16 = resampler(tensor).squeeze(0).numpy()
+            audio16 /= np.max(np.abs(audio16)) or 1.0
 
-            # accumulate into rolling window
-            buffer = np.concatenate([buffer, tensor16])
-            if buffer.shape[0] < WINDOW_SAMPLES:
-                continue
+            # 2.3 Write to file
+            wav.writeframes((audio16 * 32767).astype(np.int16).tobytes())
 
-            to_transcribe, buffer = buffer[:WINDOW_SAMPLES], buffer[WINDOW_SAMPLES//2:]
-            to_transcribe /= np.max(np.abs(to_transcribe)) or 1.0
+            # 2.4 Transcribe just this chunk
+            await stt.process_audio(audio16)
 
-            # transcribe with VAD off
-            segments, _ = stt.model.transcribe(
-                to_transcribe,
-                beam_size=5,
-                vad_filter=False
-            )
-            text = " ".join(s.text for s in segments).strip()
-            if text:
-                # **only** transcripts are printed
-                print(text)
-
-            # save audio window
-            ints = (to_transcribe * 32767).astype(np.int16)
-            wav_file.writeframes(ints.tobytes())
+            # 2.5 Fetch new segments, print them, then clear
+            new_segs = stt.get_all_transcriptions()
+            if new_segs:
+                # print each in order
+                for text in new_segs:
+                    print(text)
+                # reset buffer so we don't repeat
+                stt.reset()
 
     finally:
         await audio_cap.stop()
-        wav_file.close()
-        print("[Transcription] Pipeline stopped. Logs in pipeline.log")
+        wav.close()
+        print("[Transcription] Stopped — logs in pipeline.log")
 
 if __name__ == "__main__":
     asyncio.run(main())
