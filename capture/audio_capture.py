@@ -1,6 +1,7 @@
 import asyncio
 import sounddevice as sd
 import numpy as np
+import cupy as cp  
 from typing import Optional
 import queue
 import logging
@@ -13,7 +14,7 @@ class AudioCapture:
         self,
         sample_rate: int = 16000,  
         channels: int = 1,
-        chunk_size: int = 2048,  
+        chunk_size: int = 2084,  
         device_index: Optional[int] = None,
         buffer_size: int = 50
     ):
@@ -27,7 +28,6 @@ class AudioCapture:
         self.audio_buffer = np.array([], dtype=np.float32)
         self.lock = threading.Lock()
         
-        # Validate device settings
         self._validate_device()
 
     def _validate_device(self):
@@ -44,11 +44,17 @@ class AudioCapture:
                 self.sample_rate = int(device_info['default_samplerate'])
 
             self.device_index = index
+            print(f"[AudioCapture] Using sample rate: {self.sample_rate} Hz")
+            logger.info(f"Using sample rate: {self.sample_rate} Hz")
+
         except Exception as e:
             logger.error(f"Error validating device: {e}")
             raise
 
     async def start(self):
+        logger.info(f"Audio capture started: {self.sample_rate}Hz, {self.channels}ch, {self.chunk_size}samples")
+        print(f"[AudioCapture] Started with sample rate: {self.sample_rate} Hz")
+
         if self.is_capturing:
             return
 
@@ -64,7 +70,6 @@ class AudioCapture:
             )
             self.stream.start()
             self.is_capturing = True
-            logger.info(f"Audio capture started: {self.sample_rate}Hz, {self.channels}ch, {self.chunk_size}samples")
         except Exception as e:
             logger.error(f"Error starting audio capture: {str(e)}")
             raise
@@ -78,14 +83,22 @@ class AudioCapture:
             audio_data = self._preprocess_audio(audio_data)
             self.audio_queue.put(audio_data, timeout=0.05)
         except queue.Full:
-            logger.warning(" Audio queue full, dropping frame")
+            logger.warning("Audio queue full, dropping frame")
         except Exception as e:
             logger.error(f"Error in audio callback: {e}")
 
     def _preprocess_audio(self, audio: np.ndarray) -> np.ndarray:
-        if np.max(np.abs(audio)) > 0:
-            audio = audio / np.max(np.abs(audio))
-        return audio - np.mean(audio)
+        # Move to GPU using CuPy
+        gpu_audio = cp.asarray(audio, dtype=cp.float32)
+        
+        # Normalize and mean-center on GPU
+        max_val = cp.max(cp.abs(gpu_audio))
+        if max_val > 0:
+            gpu_audio = gpu_audio / max_val
+        gpu_audio -= cp.mean(gpu_audio)
+
+        # Move back to CPU (numpy array) for compatibility with rest of code
+        return cp.asnumpy(gpu_audio)
 
     def get_audio_chunk(self, min_samples: int = 16000) -> Optional[np.ndarray]:
         if not self.is_capturing:

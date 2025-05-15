@@ -6,7 +6,6 @@ import wave
 from capture.audio_capture import AudioCapture
 
 
-
 class AudioCaptureTester:
     def __init__(self, duration_seconds=5, min_chunk_samples=16000):
         self.duration_seconds = duration_seconds
@@ -23,16 +22,16 @@ class AudioCaptureTester:
 
         while time.time() - start_time < self.duration_seconds:
             t1 = time.time()
-            chunk = self.capture.get_audio_chunk(min_samples=self.min_chunk_samples)
+            chunk = self.capture.get_audio_chunk()  # Removed min_samples argument
             t2 = time.time()
 
-            if chunk is not None:
+            if chunk is not None and len(chunk) >= self.min_chunk_samples:
                 self.latencies.append(t2 - t1)
                 self.captured_chunks.append(chunk)
                 print(f"✅ Captured chunk of {len(chunk)} samples (Latency: {t2 - t1:.3f}s)")
             else:
                 self.dropped_chunks += 1
-                print("⚠️  No chunk available")
+                print("⚠️  No chunk available or chunk too small")
 
             await asyncio.sleep(0.1)
 

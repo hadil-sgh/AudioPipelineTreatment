@@ -1,5 +1,7 @@
 import asyncio
 import time
+import wave
+import numpy as np
 
 from capture.audio_capture import AudioCapture
 from diarization.speaker_diarization import SpeakerDiarization
@@ -7,33 +9,43 @@ from transcription.speech_to_text import SpeechToText
 
 async def audio_producer(capture: AudioCapture,
                          diar_queue: asyncio.Queue,
-                         stt_queue: asyncio.Queue):
-    """
-    Continuously polls AudioCapture for full chunks and distributes
-    them to both diarization and transcription queues.
-    """
+                         stt_queue: asyncio.Queue,
+                         save_path="output.wav"):
+
     await capture.start()
     start_time = time.time()
+
+    frames = []
+
     try:
         while True:
             chunk = capture.get_audio_chunk(min_samples=capture.sample_rate)
             if chunk is not None:
+                frames.append(chunk)
+
                 timestamp = time.time() - start_time
-                # Tag chunk with its start timestamp
                 packet = {"audio": chunk, "timestamp": timestamp}
                 await diar_queue.put(packet)
                 await stt_queue.put(packet)
             await asyncio.sleep(0.01)
+    except asyncio.CancelledError:
+        pass
     finally:
         await capture.stop()
+
+        if frames:
+            audio_data = np.concatenate(frames)
+            with wave.open(save_path, 'wb') as wf:
+                wf.setnchannels(1)  # assuming mono audio
+                wf.setsampwidth(2)  # 2 bytes per sample for int16
+                wf.setframerate(capture.sample_rate)
+                wf.writeframes(audio_data.tobytes())
+            print(f"Audio saved to {save_path}")
 
 async def diarization_consumer(diar: SpeakerDiarization,
                                diar_queue: asyncio.Queue,
                                diar_results: asyncio.Queue):
-    """
-    Consumes audio packets, feeds them into SpeakerDiarization,
-    and outputs timestamped speaker labels.
-    """
+
     while True:
         packet = await diar_queue.get()
         audio = packet["audio"]
@@ -49,10 +61,7 @@ async def diarization_consumer(diar: SpeakerDiarization,
 async def stt_consumer(stt: SpeechToText,
                        stt_queue: asyncio.Queue,
                        stt_results: asyncio.Queue):
-    """
-    Consumes audio packets, feeds them into SpeechToText,
-    and outputs timestamped transcriptions.
-    """
+  
     while True:
         packet = await stt_queue.get()
         audio = packet["audio"]
@@ -67,15 +76,11 @@ async def stt_consumer(stt: SpeechToText,
 
 async def aligner(diar_results: asyncio.Queue,
                   stt_results: asyncio.Queue):
-    """
-    Merges diarization and transcription events by matching closest timestamps.
-    Emits final speaker-tagged transcripts.
-    """
+  
     while True:
         diar_evt = await diar_results.get()
         best_text = None
-        # Look for the STT event with the closest timestamp
-        # (this is a simple example; you might want sliding window or sorted buffer)
+        
         while not stt_results.empty():
             stt_evt = stt_results.get_nowait()
             if abs(stt_evt["start"] - diar_evt["start"]) < 1.0:
@@ -84,24 +89,32 @@ async def aligner(diar_results: asyncio.Queue,
             print(f"[{diar_evt['start']:.2f}s] Speaker {diar_evt['speaker']}: {best_text}")
 
 async def main():
-    # Instantiate modules
     capture = AudioCapture()
     diar = SpeakerDiarization()
     stt = SpeechToText()
 
-    # Queues for inter-task communication
     diar_queue = asyncio.Queue()
     stt_queue = asyncio.Queue()
     diar_results = asyncio.Queue()
     stt_results = asyncio.Queue()
 
-    # Launch all tasks
-    await asyncio.gather(
-        audio_producer(capture, diar_queue, stt_queue),
-        diarization_consumer(diar, diar_queue, diar_results),
-        stt_consumer(stt, stt_queue, stt_results),
-        aligner(diar_results, stt_results)
-    )
+    producer_task = asyncio.create_task(audio_producer(capture, diar_queue, stt_queue))
+    diar_task = asyncio.create_task(diarization_consumer(diar, diar_queue, diar_results))
+    stt_task = asyncio.create_task(stt_consumer(stt, stt_queue, stt_results))
+    aligner_task = asyncio.create_task(aligner(diar_results, stt_results))
+
+    try:
+        await asyncio.gather(producer_task, diar_task, stt_task, aligner_task)
+    except asyncio.CancelledError:
+        print("Tasks cancelled")
+    except KeyboardInterrupt:
+        print("Keyboard interrupt received, stopping...")
+        # Cancel all tasks
+        producer_task.cancel()
+        diar_task.cancel()
+        stt_task.cancel()
+        aligner_task.cancel()
+        await asyncio.gather(producer_task, diar_task, stt_task, aligner_task, return_exceptions=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
