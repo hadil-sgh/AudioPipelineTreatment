@@ -5,10 +5,8 @@ import numpy as np
 import wave
 from capture.audio_capture import AudioCapture
 
-
 class AudioCaptureTester:
-    def __init__(self, duration_seconds=5, min_chunk_samples=16000):
-        self.duration_seconds = duration_seconds
+    def __init__(self, min_chunk_samples=16000):
         self.min_chunk_samples = min_chunk_samples
         self.capture = AudioCapture()
         self.captured_chunks = []
@@ -16,30 +14,34 @@ class AudioCaptureTester:
         self.dropped_chunks = 0
 
     async def run_test(self):
-        print(f"🎤 Starting audio capture test for {self.duration_seconds} seconds...")
+        print(f"🎤 Starting audio capture test for 2 minutes...")
         await self.capture.start()
+
         start_time = time.time()
+        duration = 120  # seconds
 
-        while time.time() - start_time < self.duration_seconds:
-            t1 = time.time()
-            chunk = self.capture.get_audio_chunk()  # Removed min_samples argument
-            t2 = time.time()
+        try:
+            while time.time() - start_time < duration:
+                t1 = time.time()
+                chunk = self.capture.get_audio_chunk()
+                t2 = time.time()
 
-            if chunk is not None and len(chunk) >= self.min_chunk_samples:
-                self.latencies.append(t2 - t1)
-                self.captured_chunks.append(chunk)
-                print(f"✅ Captured chunk of {len(chunk)} samples (Latency: {t2 - t1:.3f}s)")
-            else:
-                self.dropped_chunks += 1
-                print("⚠️  No chunk available or chunk too small")
+                if chunk is not None and len(chunk) >= self.min_chunk_samples:
+                    self.latencies.append(t2 - t1)
+                    self.captured_chunks.append(chunk)
+                    print(f"✅ Captured chunk of {len(chunk)} samples (Latency: {t2 - t1:.3f}s)")
+                else:
+                    self.dropped_chunks += 1
+                    print("⚠️  No chunk available or chunk too small")
 
-            await asyncio.sleep(0.1)
+                await asyncio.sleep(0.1)
 
-        await self.capture.stop()
-        print("🛑 Capture stopped.")
-        self._show_metrics()
-        self._playback()
-        self._save_wav("test_output.wav")
+        finally:
+            print("\n⏹️ Time limit reached, stopping capture...")
+            await self.capture.stop()
+            self._show_metrics()
+            self._playback()
+            self._save_wav("test_output.wav")
 
     def _show_metrics(self):
         total_captured = len(self.captured_chunks)
@@ -71,7 +73,6 @@ class AudioCaptureTester:
             wf.setframerate(self.capture.sample_rate)
             wf.writeframes(scaled.tobytes())
         print("✅ File saved.")
-
 
 if __name__ == "__main__":
     asyncio.run(AudioCaptureTester().run_test())

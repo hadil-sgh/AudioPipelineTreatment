@@ -43,5 +43,5 @@ async def transcribe_wav(path: str):
 
 if __name__ == "__main__":
     import sys
-    wav_path = sys.argv[1] if len(sys.argv) > 1 else "taken_in.wav"
+    wav_path = sys.argv[1] if len(sys.argv) > 1 else "output.wav"
     asyncio.run(transcribe_wav(wav_path))

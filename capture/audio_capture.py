@@ -1,7 +1,6 @@
 import asyncio
 import sounddevice as sd
 import numpy as np
-import cupy as cp  
 from typing import Optional
 import queue
 import logging
@@ -16,7 +15,10 @@ class AudioCapture:
         channels: int = 1,
         chunk_size: int = 2084,  
         device_index: Optional[int] = None,
-        buffer_size: int = 50
+        buffer_size: int = 50,
+        gain: float = 1.0,
+        auto_gain: bool = False,
+        target_rms: float = 0.05
     ):
         self.is_capturing = False
         self.audio_queue = queue.Queue(maxsize=buffer_size)
@@ -27,7 +29,10 @@ class AudioCapture:
         self.device_index = device_index
         self.audio_buffer = np.array([], dtype=np.float32)
         self.lock = threading.Lock()
-        
+        self.gain = gain
+        self.auto_gain = auto_gain
+        self.target_rms = target_rms
+
         self._validate_device()
 
     def _validate_device(self):
@@ -36,11 +41,15 @@ class AudioCapture:
             device_info = sd.query_devices(index)
 
             if device_info['max_input_channels'] < self.channels:
-                logger.warning(f"Device only supports {device_info['max_input_channels']} channels, adjusting...")
+                logger.warning(
+                    f"Device only supports {device_info['max_input_channels']} channels, adjusting..."
+                )
                 self.channels = device_info['max_input_channels']
 
             if self.sample_rate != int(device_info['default_samplerate']):
-                logger.warning(f"Device default sample rate is {device_info['default_samplerate']}, adjusting...")
+                logger.warning(
+                    f"Device default sample rate is {device_info['default_samplerate']}, adjusting..."
+                )
                 self.sample_rate = int(device_info['default_samplerate'])
 
             self.device_index = index
@@ -52,7 +61,9 @@ class AudioCapture:
             raise
 
     async def start(self):
-        logger.info(f"Audio capture started: {self.sample_rate}Hz, {self.channels}ch, {self.chunk_size}samples")
+        logger.info(
+            f"Audio capture started: {self.sample_rate}Hz, {self.channels}ch, {self.chunk_size}samples"
+        )
         print(f"[AudioCapture] Started with sample rate: {self.sample_rate} Hz")
 
         if self.is_capturing:
@@ -74,31 +85,36 @@ class AudioCapture:
             logger.error(f"Error starting audio capture: {str(e)}")
             raise
 
+    def _apply_auto_gain(self, audio: np.ndarray) -> np.ndarray:
+        """Apply simple RMS-based auto gain to match target_rms."""
+        rms = np.sqrt(np.mean(audio**2)) + 1e-8
+        factor = self.target_rms / rms
+        audio = audio * factor
+        return np.clip(audio, -1.0, 1.0)
+
     def _audio_callback(self, indata, frames, time, status):
         if status:
             logger.warning(f"Audio callback status: {status}")
-        
         try:
-            audio_data = np.mean(indata, axis=1) if self.channels > 1 else indata.flatten()
-            audio_data = self._preprocess_audio(audio_data)
+            # mix-down to mono if needed
+            audio_data = (
+                np.mean(indata, axis=1)
+                if self.channels > 1
+                else indata.flatten()
+            )
+
+            # apply gain or auto_gain
+            if self.auto_gain:
+                audio_data = self._apply_auto_gain(audio_data)
+            elif self.gain != 1.0:
+                audio_data = audio_data * self.gain
+                audio_data = np.clip(audio_data, -1.0, 1.0)
+
             self.audio_queue.put(audio_data, timeout=0.05)
         except queue.Full:
             logger.warning("Audio queue full, dropping frame")
         except Exception as e:
             logger.error(f"Error in audio callback: {e}")
-
-    def _preprocess_audio(self, audio: np.ndarray) -> np.ndarray:
-        # Move to GPU using CuPy
-        gpu_audio = cp.asarray(audio, dtype=cp.float32)
-        
-        # Normalize and mean-center on GPU
-        max_val = cp.max(cp.abs(gpu_audio))
-        if max_val > 0:
-            gpu_audio = gpu_audio / max_val
-        gpu_audio -= cp.mean(gpu_audio)
-
-        # Move back to CPU (numpy array) for compatibility with rest of code
-        return cp.asnumpy(gpu_audio)
 
     def get_audio_chunk(self, min_samples: int = 16000) -> Optional[np.ndarray]:
         if not self.is_capturing:
@@ -143,5 +159,8 @@ class AudioCapture:
             "channels": self.channels,
             "chunk_size": self.chunk_size,
             "device_index": self.device_index,
-            "is_capturing": self.is_capturing
+            "is_capturing": self.is_capturing,
+            "gain": self.gain,
+            "auto_gain": self.auto_gain,
+            "target_rms": self.target_rms
         }

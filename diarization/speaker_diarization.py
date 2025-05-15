@@ -17,12 +17,12 @@ from speechbrain.inference.speaker import EncoderClassifier
 class SpeakerDiarization:
     def __init__(
         self,
-        min_speech_duration: float = 0.75, # Default, can be overridden in __main__
-        threshold: float = 0.03,         # Default, can be overridden in __main__
-        n_speakers: int = 2,
+        min_speech_duration: float = 0.1,   # Further reduced for shorter utterances
+        threshold: float = 0.005,           # Lower threshold for better speech detection
+        n_speakers: int = 2,               # We know there are exactly 2 speakers
         embedding_model_source: str = "speechbrain/spkrec-ecapa-voxceleb",
         device: Optional[str] = None,
-        process_buffer_duration: float = 5.0
+        process_buffer_duration: float = 0.15  # Reduced for more frequent updates
     ):
         self.sample_rate = 16000
         self.min_speech_duration = min_speech_duration
@@ -47,35 +47,38 @@ class SpeakerDiarization:
             print(f"Error loading SpeechBrain model: {e}")
             raise
 
-        self.vad_frame_length = 2048
-        self.vad_hop_length = 512
+        self.vad_frame_length = 512  # Reduced for better temporal resolution
+        self.vad_hop_length = 128    # Reduced for better temporal resolution
         self.audio_buffer = []
         self.speaker_embeddings = []
         self.speaker_labels = []
+        self.last_speaker_change_time = 0
+        self.min_speaker_change_duration = 0.3  # Reduced minimum time between speaker changes
 
         self.clustering = AgglomerativeClustering(
-            n_clusters=self.n_speakers if self.n_speakers > 0 else None,
-            distance_threshold=None if self.n_speakers > 0 else 0.6,
+            n_clusters=self.n_speakers,
+            distance_threshold=None,
             metric='cosine',
             linkage='average'
         )
-        if self.n_speakers <= 0:
-            print(f"n_speakers <= 0, clustering will use distance_threshold={self.clustering.distance_threshold}")
 
         if self.device == "cuda":
            torch.backends.cudnn.benchmark = True
 
     def _extract_features(self, audio_segment_np: np.ndarray) -> Optional[np.ndarray]:
+        # Ensure audio is 1D
         if audio_segment_np.ndim > 1:
             audio_segment_np = np.mean(audio_segment_np, axis=0)
-        audio_tensor =torch.from_numpy(audio_segment_np).float().to(self.device)
+            
+        # Convert to tensor
+        audio_tensor = torch.from_numpy(audio_segment_np).float().to(self.device)
         if audio_tensor.ndim == 1:
             audio_tensor = audio_tensor.unsqueeze(0)
 
-        min_len_for_sb_model = 1600 # ~100ms
+        min_len_for_sb_model = 1600  # ~100ms
         if audio_tensor.shape[1] < min_len_for_sb_model:
             padding_needed = min_len_for_sb_model - audio_tensor.shape[1]
-            audio_tensor =torch.nn.functional.pad(audio_tensor, (0, padding_needed), mode='reflect')
+            audio_tensor = torch.nn.functional.pad(audio_tensor, (0, padding_needed), mode='reflect')
 
         with torch.no_grad():
             try:
@@ -93,63 +96,75 @@ class SpeakerDiarization:
                 return None
 
     def _detect_speech_segments(self, audio: np.ndarray) -> List[Tuple[int, int]]:
+        # Ensure audio is 1D
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=0)
+            
+        # Use multiple features for better speech detection
+        onset_env = librosa.onset.onset_strength(y=audio, sr=self.sample_rate, hop_length=self.vad_hop_length)
         energy = librosa.feature.rms(y=audio, frame_length=self.vad_frame_length, hop_length=self.vad_hop_length)[0]
-        if not energy.size:
-            print("VAD Debug: No energy frames computed (audio segment likely too short for VAD analysis).")
-            return []
-
-        # <<< ENHANCED DEBUG PRINTS >>>
-        print(f"\nVAD Debug (in _detect_speech_segments for {len(audio)/self.sample_rate:.2f}s audio buffer):")
-        print(f"    Energy (min,max,mean,std): {np.min(energy):.4f}, {np.max(energy):.4f}, {np.mean(energy):.4f}, {np.std(energy):.4f}. Num Frames: {len(energy)}")
-        print(f"    Using VAD threshold: {self.threshold:.4f}")
-
+        zero_crossings = librosa.feature.zero_crossing_rate(audio, frame_length=self.vad_frame_length, hop_length=self.vad_hop_length)[0]
+        
+        # Ensure all features have the same length
+        min_length = min(len(onset_env), len(energy), len(zero_crossings))
+        onset_env = onset_env[:min_length]
+        energy = energy[:min_length]
+        zero_crossings = zero_crossings[:min_length]
+        
+        # Normalize features
+        onset_env = (onset_env - np.min(onset_env)) / (np.max(onset_env) - np.min(onset_env) + 1e-8)
+        energy = (energy - np.min(energy)) / (np.max(energy) - np.min(energy) + 1e-8)
+        zero_crossings = (zero_crossings - np.min(zero_crossings)) / (np.max(zero_crossings) - np.min(zero_crossings) + 1e-8)
+        
+        # Combine features with weights
+        combined = (0.6 * onset_env + 0.3 * energy + 0.1 * zero_crossings)
+        
+        # Apply smoothing
+        combined = np.convolve(combined, np.ones(5)/5, mode='same')
+        
         min_speech_samples = self.min_speech_duration * self.sample_rate
         min_speech_frames_vad = math.ceil(min_speech_samples / self.vad_hop_length)
         if min_speech_frames_vad < 1: min_speech_frames_vad = 1
-        print(f"    Min speech duration: {self.min_speech_duration:.2f}s == {min_speech_frames_vad} VAD frames")
 
-        speech_segments_found_by_vad = []
+        speech_segments = []
         is_speech = False
         start_frame = 0
-        for i, e_val in enumerate(energy):
-            if not is_speech and e_val > self.threshold:
+        
+        # Add hysteresis to prevent rapid switching
+        high_threshold = self.threshold
+        low_threshold = self.threshold * 0.3  # More aggressive hysteresis
+        
+        for i, val in enumerate(combined):
+            if not is_speech and val > high_threshold:
                 is_speech = True
                 start_frame = i
-            elif is_speech and e_val <= self.threshold:
+            elif is_speech and val < low_threshold:
                 is_speech = False
                 segment_duration_frames = i - start_frame
                 if segment_duration_frames >= min_speech_frames_vad:
-                    speech_segments_found_by_vad.append((start_frame, i))
-                    # print(f"    VAD found segment: frames {start_frame}-{i} (duration {segment_duration_frames} frames)")
-                else:
-                    print(f"    VAD discarded short segment: frames {start_frame}-{i} (duration {segment_duration_frames} frames, needed {min_speech_frames_vad})")
-
+                    speech_segments.append((start_frame, i))
 
         if is_speech:
-            end_frame = len(energy)
+            end_frame = len(combined)
             segment_duration_frames = end_frame - start_frame
             if segment_duration_frames >= min_speech_frames_vad:
-                speech_segments_found_by_vad.append((start_frame, end_frame))
-                # print(f"    VAD found segment at end: frames {start_frame}-{end_frame} (duration {segment_duration_frames} frames)")
-            else:
-                 print(f"    VAD discarded short segment at end: frames {start_frame}-{end_frame} (duration {segment_duration_frames} frames, needed {min_speech_frames_vad})")
+                speech_segments.append((start_frame, end_frame))
 
-
-        print(f"    _detect_speech_segments is returning {len(speech_segments_found_by_vad)} segments from this buffer.")
-        return speech_segments_found_by_vad
+        return speech_segments
 
     async def process_audio_buffer(self):
         if not self.audio_buffer:
-            # print("process_audio_buffer called with empty self.audio_buffer") # Debug
             return
 
         audio_combined = np.array(self.audio_buffer, dtype=np.float32)
         self.audio_buffer = []
 
-        print(f"\nProcessing accumulated buffer of {len(audio_combined)/self.sample_rate:.2f}s...")
-        segments_frame_indices = self._detect_speech_segments(audio_combined)
-        print(f"Found {len(segments_frame_indices)} segments from VAD to process for embeddings.")
+        # Ensure audio is 1D
+        if audio_combined.ndim > 1:
+            audio_combined = np.mean(audio_combined, axis=0)
 
+        segments_frame_indices = self._detect_speech_segments(audio_combined)
+        
         new_embeddings_added = False
         for start_frame, end_frame in segments_frame_indices:
             start_sample = int(start_frame * self.vad_hop_length)
@@ -161,18 +176,22 @@ class SpeakerDiarization:
             if len(segment_audio) == 0:
                 continue
 
-            # print(f"Extracting features for segment of {len(segment_audio)/self.sample_rate:.2f}s") # Debug
+            # Only process segments with sufficient energy
+            segment_energy = np.mean(np.abs(segment_audio))
+            if segment_energy < self.threshold * 0.5:  # Skip very quiet segments
+                continue
+
+            # Ensure segment is long enough for the model
+            if len(segment_audio) < 1600:  # Minimum length for SpeechBrain model
+                continue
+
             embedding = self._extract_features(segment_audio)
             if embedding is not None:
                 self.speaker_embeddings.append(embedding)
                 new_embeddings_added = True
-            # else: # Debug
-                # print(f"Feature extraction returned None for segment of {len(segment_audio)/self.sample_rate:.2f}s")
-
 
         if new_embeddings_added:
             self._update_speaker_labels()
-
 
     async def process_audio(self, audio_chunk: np.ndarray):
         self.audio_buffer.extend(audio_chunk)
@@ -190,24 +209,47 @@ class SpeakerDiarization:
 
     def _update_speaker_labels(self):
         if not self.speaker_embeddings: return
-        if self.n_speakers > 0 and len(self.speaker_embeddings) < self.n_speakers:
-            # print(f"Update labels: Not enough embeddings ({len(self.speaker_embeddings)}) for {self.n_speakers} clusters yet.")
-            return
+        if len(self.speaker_embeddings) < 2: return
 
         embeddings_matrix = np.vstack(self.speaker_embeddings)
-        if embeddings_matrix.shape[0] < 2:
-            # print("Update labels: Less than 2 embeddings, cannot cluster.")
-            return
-        if self.clustering.n_clusters is not None and embeddings_matrix.shape[0] < self.clustering.n_clusters:
-            # print(f"Update labels: Not enough embeddings ({embeddings_matrix.shape[0]}) for specified n_clusters ({self.clustering.n_clusters}).")
-            return
-
+        
         try:
+            # Normalize embeddings
+            norms = np.linalg.norm(embeddings_matrix, axis=1, keepdims=True)
+            embeddings_matrix = embeddings_matrix / (norms + 1e-8)
+            
+            # Use fixed number of clusters
+            self.clustering.n_clusters = 2
             labels = self.clustering.fit_predict(embeddings_matrix)
+            
+            # Ensure consistent speaker labeling
+            if len(self.speaker_labels) > 0:
+                # Map new labels to maintain consistency with previous labels
+                last_label = self.speaker_labels[-1]
+                current_time = len(self.speaker_labels) * self.process_buffer_duration
+                
+                # Only allow speaker change if enough time has passed
+                if current_time - self.last_speaker_change_time >= self.min_speaker_change_duration:
+                    if labels[-1] != last_label:
+                        # Only flip if we have enough confidence in the new label
+                        if len(labels) >= 3:  # Need at least 3 embeddings for confidence
+                            # Calculate similarity with previous speaker
+                            prev_embeddings = embeddings_matrix[:-1]
+                            curr_embedding = embeddings_matrix[-1:]
+                            similarity = np.mean(np.dot(prev_embeddings, curr_embedding.T))
+                            
+                            if similarity < 0.7:  # Only change if similarity is low enough
+                                labels = 1 - labels  # Flip labels if needed
+                                self.last_speaker_change_time = current_time
+                                print(f"Speaker change detected at {current_time:.2f}s: {last_label} -> {labels[-1]} (similarity: {similarity:.3f})")
+                else:
+                    # Force same speaker if not enough time has passed
+                    labels = np.full_like(labels, last_label)
+            
             self.speaker_labels = labels.tolist()
-            print(f"Speaker labels updated: {self.speaker_labels}")
-        except ValueError as e:
-            print(f"Clustering error: {e}. Embeddings shape: {embeddings_matrix.shape}")
+                
+        except Exception as e:
+            print(f"Clustering error: {e}")
 
     def get_current_speaker(self) -> Optional[int]:
         if not self.speaker_labels: return None
