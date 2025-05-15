@@ -1,4 +1,3 @@
-# audio_capture.py 
 import asyncio
 import sounddevice as sd
 import numpy as np
@@ -10,11 +9,11 @@ import threading
 logger = logging.getLogger(__name__)
 
 class AudioCapture:
-    def __init__(
+    def __init__(   
         self,
-        sample_rate: int = 16000,
+        sample_rate: int = 16000,  
         channels: int = 1,
-        chunk_size: int = 1024,
+        chunk_size: int = 2048,  
         device_index: Optional[int] = None,
         buffer_size: int = 50
     ):
@@ -32,9 +31,7 @@ class AudioCapture:
         self._validate_device()
 
     def _validate_device(self):
-        """Validate and adjust device settings"""
         try:
-            # If device_index is None, use default input device
             index = self.device_index or sd.default.device[0]
             device_info = sd.query_devices(index)
 
@@ -46,15 +43,12 @@ class AudioCapture:
                 logger.warning(f"Device default sample rate is {device_info['default_samplerate']}, adjusting...")
                 self.sample_rate = int(device_info['default_samplerate'])
 
-            # Store updated device index in case we used default
             self.device_index = index
-
         except Exception as e:
             logger.error(f"Error validating device: {e}")
             raise
 
     async def start(self):
-        """Start audio capture with async support"""
         if self.is_capturing:
             return
 
@@ -76,36 +70,24 @@ class AudioCapture:
             raise
 
     def _audio_callback(self, indata, frames, time, status):
-        """Sounddevice callback for audio input"""
         if status:
             logger.warning(f"Audio callback status: {status}")
         
         try:
-            # Convert to mono if needed
-            if self.channels > 1:
-                audio_data = np.mean(indata, axis=1)
-            else:
-                audio_data = indata.flatten()
-
-            # Apply preprocessing
+            audio_data = np.mean(indata, axis=1) if self.channels > 1 else indata.flatten()
             audio_data = self._preprocess_audio(audio_data)
-
-            # Add to queue with timeout
-            self.audio_queue.put(audio_data, timeout=0.1)
+            self.audio_queue.put(audio_data, timeout=0.05)
         except queue.Full:
-            logger.warning("Audio queue full, dropping frame")
+            logger.warning(" Audio queue full, dropping frame")
         except Exception as e:
             logger.error(f"Error in audio callback: {e}")
 
     def _preprocess_audio(self, audio: np.ndarray) -> np.ndarray:
-        """Basic audio preprocessing"""
         if np.max(np.abs(audio)) > 0:
             audio = audio / np.max(np.abs(audio))
-        audio = audio - np.mean(audio)
-        return audio
+        return audio - np.mean(audio)
 
     def get_audio_chunk(self, min_samples: int = 16000) -> Optional[np.ndarray]:
-        """Get audio chunk with minimum sample requirement"""
         if not self.is_capturing:
             return None
 
@@ -125,7 +107,6 @@ class AudioCapture:
             return chunk
 
     async def stop(self):
-        """Stop audio capture"""
         if not self.is_capturing:
             return
 
@@ -141,11 +122,9 @@ class AudioCapture:
             raise
 
     def list_devices(self):
-        """List available audio devices"""
         return sd.query_devices()
 
     def get_device_info(self):
-        """Get current device configuration"""
         return {
             "sample_rate": self.sample_rate,
             "channels": self.channels,
