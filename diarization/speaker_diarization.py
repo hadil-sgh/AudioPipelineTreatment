@@ -174,11 +174,6 @@ def visualize_diarization(audio: np.ndarray, sample_rate: int, diarization: Spea
     plt.legend()
     plt.show()
 
-from typing import List
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-
 def visualize_embeddings(embeddings: np.ndarray, labels: List[int], method="tsne"):
     if embeddings.shape[0] == 0:
         print("No embeddings to visualize.")
@@ -186,7 +181,6 @@ def visualize_embeddings(embeddings: np.ndarray, labels: List[int], method="tsne
 
     plt.figure(figsize=(10, 7))
     if method == "tsne":
-        # Set perplexity dynamically based on number of samples
         perplexity = min(30, embeddings.shape[0] - 1)
         tsne = TSNE(n_components=2, random_state=42, init='pca', learning_rate='auto', perplexity=perplexity)
         emb_2d = tsne.fit_transform(embeddings)
@@ -203,6 +197,7 @@ def visualize_embeddings(embeddings: np.ndarray, labels: List[int], method="tsne
     plt.title("Speaker Embeddings Visualization")
     plt.legend()
     plt.show()
+
 async def main():
     diarization = SpeakerDiarization(
         threshold=0.02,  # adjust this if needed to detect speech better
@@ -214,25 +209,24 @@ async def main():
     if sr != diarization.sample_rate:
         import librosa
         audio = librosa.resample(audio, orig_sr=sr, target_sr=diarization.sample_rate)
-    
+
     # Feed the whole audio at once (or in chunks)
     await diarization.process_audio(audio.tolist())
-    
+
     # Finalize to process remaining buffer
     await diarization.finalize_processing()
-    
-    # Now check embeddings and labels
+
     if len(diarization.speaker_embeddings) == 0:
         print("No embeddings found after processing!")
         return
-    
+
     print(f"Found {len(diarization.speaker_embeddings)} speaker embeddings.")
     print(f"Speaker labels: {diarization.speaker_labels}")
 
-    # Visualize embeddings and diarization
-    import numpy as np
-    embeddings_np = np.vstack(diarization.speaker_embeddings)
-    visualize_embeddings(embeddings_np, diarization.speaker_labels)
-    visualize_diarization(audio, diarization.sample_rate, diarization)
+    # Uncomment to visualize embeddings and diarization
+    # embeddings_np = np.vstack(diarization.speaker_embeddings)
+    # visualize_embeddings(embeddings_np, diarization.speaker_labels)
+    # visualize_diarization(audio, diarization.sample_rate, diarization)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
