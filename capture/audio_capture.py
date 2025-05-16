@@ -15,7 +15,7 @@ class AudioCapture:
         channels: int = 1,
         chunk_size: int = 2084,  
         device_index: Optional[int] = None,
-        buffer_size: int = 50,
+        buffer_size: int = 100,
         gain: float = 1.0,
         auto_gain: bool = False,
         target_rms: float = 0.05

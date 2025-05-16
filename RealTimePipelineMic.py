@@ -1,135 +1,89 @@
 import asyncio
-import time
+import logging
 import wave
 import numpy as np
+import signal
 import torch
 import torchaudio
 
 from capture.audio_capture import AudioCapture
-from diarization.speaker_diarization import SpeakerDiarization
 from transcription.speech_to_text import SpeechToText
 
-async def audio_producer(capture: AudioCapture,
-                         diar_queue: asyncio.Queue,
-                         stt_queue: asyncio.Queue,
-                         save_path="output.wav"):
+# ————————————————————————————————————————————————————————————————————————
+# 1) Route all logs to file (pipeline.log); only transcripts print to console
+# ————————————————————————————————————————————————————————————————————————
+LOG_FILE = "pipeline.log"
+fh = logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")
+fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s"))
+logging.getLogger().setLevel(logging.DEBUG)
+logging.getLogger().addHandler(fh)
+# remove default console log handlers
+for h in list(logging.getLogger().handlers):
+    if isinstance(h, logging.StreamHandler):
+        logging.getLogger().removeHandler(h)
 
-    await capture.start()
-    device_sr = capture.sample_rate
-    target_sr = 16000
-    resampler = torchaudio.transforms.Resample(orig_freq=device_sr, new_freq=target_sr)
+# ————————————————————————————————————————————————————————————————————————
+# 2) Real‑time pipeline without echo
+# ————————————————————————————————————————————————————————————————————————
+async def main():
+    # 2.1 Initialize capture and STT
+    audio_cap = AudioCapture()
+    await audio_cap.start()
+    device_sr = audio_cap.sample_rate
 
-    start_time = time.time()
-    frames = []
+    # resample to 16 kHz (model’s expected rate)
+    target_sr = 16_000
+    resampler = torchaudio.transforms.Resample(device_sr, target_sr)
+    stt = SpeechToText(sample_rate=target_sr)
+
+    # optional: save to WAV
+    wav = wave.open("output.wav", "wb")
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(target_sr)
+
+    stop = False
+    def on_sigint(sig, frame):
+        nonlocal stop
+        stop = True
+    signal.signal(signal.SIGINT, on_sigint)
+
+    print("[Transcription] Started — press Ctrl+C to stop")
 
     try:
-        while True:
-            chunk = capture.get_audio_chunk(min_samples=device_sr)
+        while not stop:
+            # grab 1 s of raw audio (or whatever min_samples you choose)
+            chunk = audio_cap.get_audio_chunk(min_samples=target_sr)
             if chunk is None:
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.05)
                 continue
 
-            # Convert to float32 if needed
+            # 2.2 Resample & normalize
             if chunk.dtype != np.float32:
                 chunk = chunk.astype(np.float32)
-
-            # Convert to tensor and resample to 16kHz
             tensor = torch.from_numpy(chunk).unsqueeze(0)
-            resampled = resampler(tensor).squeeze(0).numpy()
+            audio16 = resampler(tensor).squeeze(0).numpy()
+            audio16 /= np.max(np.abs(audio16)) or 1.0
 
-            # Normalize audio
-            max_val = np.max(np.abs(resampled)) or 1.0
-            cleaned = resampled / max_val
+            # 2.3 Write to file
+            wav.writeframes((audio16 * 32767).astype(np.int16).tobytes())
 
-            # Save frame for output WAV
-            frames.append((cleaned * 32767).astype(np.int16))
+            # 2.4 Transcribe just this chunk
+            await stt.process_audio(audio16)
 
-            timestamp = time.time() - start_time
-            packet = {"audio": cleaned, "timestamp": timestamp}
-            await diar_queue.put(packet)
-            await stt_queue.put(packet)
+            # 2.5 Fetch new segments, print them, then clear
+            new_segs = stt.get_all_transcriptions()
+            if new_segs:
+                # print each in order
+                for text in new_segs:
+                    print(text)
+                # reset buffer so we don't repeat
+                stt.reset()
 
-    except asyncio.CancelledError:
-        pass
     finally:
-        await capture.stop()
-
-        if frames:
-            with wave.open(save_path, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)  # 2 bytes = int16
-                wf.setframerate(target_sr)
-                wf.writeframes(b''.join([f.tobytes() for f in frames]))
-            print(f"Audio saved to {save_path}")
-
-async def diarization_consumer(diar: SpeakerDiarization,
-                               diar_queue: asyncio.Queue,
-                               diar_results: asyncio.Queue):
-    while True:
-        packet = await diar_queue.get()
-        audio = packet["audio"]
-        ts = packet["timestamp"]
-        await diar.process_audio(audio)
-        speaker = diar.get_current_speaker()
-        if speaker is not None:
-            await diar_results.put({
-                "start": ts,
-                "speaker": speaker
-            })
-
-async def stt_consumer(stt: SpeechToText,
-                       stt_queue: asyncio.Queue,
-                       stt_results: asyncio.Queue):
-    while True:
-        packet = await stt_queue.get()
-        audio = packet["audio"]
-        ts = packet["timestamp"]
-        await stt.process_audio(audio)
-        text = stt.get_latest_transcription()
-        if text:
-            await stt_results.put({
-                "start": ts,
-                "text": text
-            })
-
-async def aligner(diar_results: asyncio.Queue,
-                  stt_results: asyncio.Queue):
-    while True:
-        diar_evt = await diar_results.get()
-        best_text = None
-        while not stt_results.empty():
-            stt_evt = stt_results.get_nowait()
-            if abs(stt_evt["start"] - diar_evt["start"]) < 1.0:
-                best_text = stt_evt["text"]
-        if best_text:
-            print(f"[{diar_evt['start']:.2f}s] Speaker {diar_evt['speaker']}: {best_text}")
-
-async def main():
-    capture = AudioCapture()
-    diar = SpeakerDiarization()
-    stt = SpeechToText()
-
-    diar_queue = asyncio.Queue()
-    stt_queue = asyncio.Queue()
-    diar_results = asyncio.Queue()
-    stt_results = asyncio.Queue()
-
-    producer_task = asyncio.create_task(audio_producer(capture, diar_queue, stt_queue))
-    diar_task = asyncio.create_task(diarization_consumer(diar, diar_queue, diar_results))
-    stt_task = asyncio.create_task(stt_consumer(stt, stt_queue, stt_results))
-    aligner_task = asyncio.create_task(aligner(diar_results, stt_results))
-
-    try:
-        await asyncio.gather(producer_task, diar_task, stt_task, aligner_task)
-    except asyncio.CancelledError:
-        print("Tasks cancelled")
-    except KeyboardInterrupt:
-        print("Keyboard interrupt received, stopping...")
-        producer_task.cancel()
-        diar_task.cancel()
-        stt_task.cancel()
-        aligner_task.cancel()
-        await asyncio.gather(producer_task, diar_task, stt_task, aligner_task, return_exceptions=True)
+        await audio_cap.stop()
+        wav.close()
+        print("[Transcription] Stopped — logs in pipeline.log")
 
 if __name__ == "__main__":
     asyncio.run(main())
