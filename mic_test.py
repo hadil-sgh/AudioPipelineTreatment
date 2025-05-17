@@ -5,7 +5,7 @@ from datetime import datetime
 from capture.audio_capture import AudioCapture
 from diarization.speaker_diarization import SpeakerDiarization
 from transcription.speech_to_text import SpeechToText
-from sentiment.sentiment_analyzer import SentimentAnalyzer
+from sentiment.voice_emotion_recognizer import SentimentAnalyzer
 import logging
 import json
 from typing import Dict, Optional

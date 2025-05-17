@@ -5,6 +5,7 @@ import librosa
 
 from diarization.speaker_diarization import SpeakerDiarization
 from transcription.speech_to_text import SpeechToText
+from sentiment.SentimentFromTrans import RealTimeSentimentAnalyzer  # adjust path if needed
 
 class RealTimeWavPipeline:
     def __init__(
@@ -28,10 +29,11 @@ class RealTimeWavPipeline:
         # Components
         self.diar = SpeakerDiarization(device="cuda", process_buffer_duration=5.0)
         self.stt = SpeechToText(device="cuda", sample_rate=sample_rate)
+        self.sentiment = RealTimeSentimentAnalyzer()  # ← added sentiment analyzer
 
         # Open log file
         self.log_file = open(self.log_path, 'w', encoding='utf-8')
-        self.log_file.write("Timestamp | Speaker | Transcription\n")
+        self.log_file.write("Timestamp | Speaker | Transcription | Sentiment (compound)\n")
         self.log_file.flush()
 
         # State to avoid repeats
@@ -94,17 +96,26 @@ class RealTimeWavPipeline:
                     text = stt_evt['text']
             if text is None:
                 continue
+
+            # Sentiment analysis
+            sentiment_result = self.sentiment.analyze(text)
+            sentiment_label = sentiment_result['sentiment']
+            compound_score = sentiment_result['compound']
+
             # Only log if speaker or text changed
             if speaker != self.last_speaker or text != self.last_text:
                 ts_str = time.strftime('%H:%M:%S', time.gmtime(ts))
-                # If speaker changed, start new line
                 if speaker != self.last_speaker:
-                    line = f"{ts_str} | SPEAKER_{speaker:02d} | {text}\n"
+                    line = (
+                        f"{ts_str} | SPEAKER_{speaker:02d} | {text} "
+                        f"| {sentiment_label} ({compound_score})\n"
+                    )
                 else:
-                    # same speaker: only log new part
                     new_part = text.replace(self.last_text, '').strip()
-                    line = f"{ts_str} | SPEAKER_{speaker:02d} | {new_part}\n"
-                # Print and write
+                    line = (
+                        f"{ts_str} | SPEAKER_{speaker:02d} | {new_part} "
+                        f"| {sentiment_label} ({compound_score})\n"
+                    )
                 print(line, end='')
                 self.log_file.write(line)
                 self.log_file.flush()
@@ -124,7 +135,7 @@ class RealTimeWavPipeline:
 
 if __name__ == "__main__":
     pipeline = RealTimeWavPipeline(
-        "output.wav",
+        "ordinary.wav",
         sample_rate=16000,
         chunk_duration=1.0,
         log_path="transcription.log"

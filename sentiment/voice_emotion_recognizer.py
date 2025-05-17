@@ -1,10 +1,7 @@
 import numpy as np
 from typing import Dict
 import torch
-import torchaudio
 from transformers import (
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
     AutoFeatureExtractor,
     AutoModelForAudioClassification
 )
@@ -15,14 +12,11 @@ import gc
 class SentimentAnalyzer:
     def __init__(
         self,
-        text_model_name: str = "j-hartmann/emotion-english-distilroberta-base",
         voice_model_name: str = "harshit345/xlsr-wav2vec-speech-emotion-recognition"
     ):
-        self.text_model_name = text_model_name
         self.voice_model_name = voice_model_name
 
-        self.text_tokenizer = None
-        self.text_model = None
+       
         self.voice_processor = None
         self.voice_model = None
 
@@ -36,37 +30,12 @@ class SentimentAnalyzer:
         self.hop_length = 512
         self.n_mels = 128
 
-    def load_text_model(self):
-        if self.text_tokenizer is None or self.text_model is None:
-            self.text_tokenizer = AutoTokenizer.from_pretrained(self.text_model_name)
-            self.text_model = AutoModelForSequenceClassification.from_pretrained(self.text_model_name).to(self.device)
 
     def load_voice_model(self):
         if self.voice_processor is None or self.voice_model is None:
             self.voice_processor = AutoFeatureExtractor.from_pretrained(self.voice_model_name)
             self.voice_model = AutoModelForAudioClassification.from_pretrained(self.voice_model_name).to(self.device)
 
-    def analyze_text(self, text: str) -> Dict:
-        self.load_text_model()
-        try:
-            inputs = self.text_tokenizer(text, return_tensors="pt", truncation=True, max_length=512).to(self.device)
-            with torch.no_grad():
-                outputs = self.text_model(**inputs)
-                scores = torch.softmax(outputs.logits, dim=1)
-
-            emotion_idx = torch.argmax(scores).item()
-            emotion = self.text_model.config.id2label[emotion_idx]
-            score = scores[0][emotion_idx].item()
-
-            if self.device == "cuda":
-                del inputs, outputs, scores
-                torch.cuda.empty_cache()
-                gc.collect()
-
-            return {"emotion": emotion, "score": score}
-        except Exception as e:
-            print(f"Error in text analysis: {e}")
-            return {"emotion": "UNKNOWN", "score": 0.0}
 
     def analyze_voice(self, audio: np.ndarray) -> Dict:
         self.load_voice_model()
@@ -111,9 +80,9 @@ class SentimentAnalyzer:
             print(f"Error in feature extraction: {e}")
             return {"pitch": 0.0, "energy": 0.0, "speaking_rate": 0.0}
 
-    def analyze(self, text: str, audio: np.ndarray) -> Dict:
+    def analyze(self, audio: np.ndarray) -> Dict:
         return {
-            "text": self.analyze_text(text),
+           
             "voice": self.analyze_voice(audio)
         }
 
