@@ -5,7 +5,7 @@ import librosa
 
 from diarization.speaker_diarization import SpeakerDiarization
 from transcription.speech_to_text import SpeechToText
-from sentiment.SentimentFromTrans import RealTimeSentimentAnalyzer  # adjust path if needed
+from sentiment.SentimentFromTrans import RealTimeSentimentAnalyzer  
 
 class RealTimeWavPipeline:
     def __init__(

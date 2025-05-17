@@ -9,7 +9,7 @@ import librosa
 from scipy.signal import find_peaks
 import gc
 
-class SentimentAnalyzer:
+class voice_emotion_recognizer:
     def __init__(
         self,
         voice_model_name: str = "harshit345/xlsr-wav2vec-speech-emotion-recognition"
@@ -51,7 +51,7 @@ class SentimentAnalyzer:
             emotion = self.voice_model.config.id2label[emotion_idx]
             score = scores[0][emotion_idx].item()
 
-            features = self._extract_voice_features(audio)
+            features = self._extract_features(audio)
 
             if self.device == "cuda":
                 del inputs, outputs, scores
@@ -67,23 +67,73 @@ class SentimentAnalyzer:
                 "features": {"pitch": 0.0, "energy": 0.0, "speaking_rate": 0.0}
             }
 
-    def _extract_voice_features(self, audio: np.ndarray) -> Dict:
+    def _extract_features(self, audio: np.ndarray) -> Dict:
+        """Extract voice features from audio."""
         try:
+            # Extract pitch using librosa's piptrack
             pitches, magnitudes = librosa.piptrack(y=audio, sr=self.sample_rate, hop_length=self.hop_length)
             pitch = np.mean(pitches[magnitudes > np.median(magnitudes)])
+            
+            # Calculate energy (RMS)
             energy = np.mean(librosa.feature.rms(y=audio)[0])
+            
+            # Calculate speaking rate
             peaks, _ = find_peaks(np.abs(audio), height=np.std(audio))
             speaking_rate = len(peaks) / (len(audio) / self.sample_rate)
-
-            return {"pitch": float(pitch), "energy": float(energy), "speaking_rate": float(speaking_rate)}
+            
+            return {
+                "pitch": float(pitch),
+                "energy": float(energy),
+                "speaking_rate": float(speaking_rate)
+            }
         except Exception as e:
             print(f"Error in feature extraction: {e}")
-            return {"pitch": 0.0, "energy": 0.0, "speaking_rate": 0.0}
+            return {
+                "pitch": 0.0,
+                "energy": 0.0,
+                "speaking_rate": 0.0
+            }
+
+    def _classify_emotion(self, features: Dict) -> Dict:
+        """Classify emotion based on voice features."""
+        # Simple rule-based classification
+        pitch = features["pitch"]
+        energy = features["energy"]
+        rate = features["speaking_rate"]
+        
+        # Default to NATURAL
+        emotion = "NATURAL"
+        score = 0.5
+        
+        # High pitch and energy might indicate excitement
+        if pitch > 200 and energy > 0.1:
+            emotion = "EXCITED"
+            score = 0.8
+        # Low pitch and energy might indicate sadness
+        elif pitch < 100 and energy < 0.05:
+            emotion = "SAD"
+            score = 0.7
+        # High speaking rate might indicate anxiety
+        elif rate > 0.15:
+            emotion = "ANXIOUS"
+            score = 0.6
+            
+        return {
+            "emotion": emotion,
+            "score": score
+        }
 
     def analyze(self, audio: np.ndarray) -> Dict:
+        """Analyze voice emotion from audio."""
+        features = self._extract_features(audio)
+        emotion_result = self._classify_emotion(features)
+        
         return {
-           
-            "voice": self.analyze_voice(audio)
+            "voice": {
+                "emotion": emotion_result["emotion"],
+                "score": emotion_result["score"],
+                "features": features
+            }
         }
 
     def __del__(self):
