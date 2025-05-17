@@ -1,11 +1,8 @@
 import numpy as np
 from typing import List, Tuple, Optional
 import torch
-import torchaudio
 from sklearn.cluster import AgglomerativeClustering
 import librosa
-import asyncio
-import gc
 import math
 
 from speechbrain.inference.speaker import EncoderClassifier
