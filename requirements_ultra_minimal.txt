@@ -1,0 +1,36 @@
+pytest
+pytest-asyncio
+numpy
+soundfile
+sounddevice
+librosa
+numba
+# pydantic for any data models in tests
+pydantic
+# For main.py related tests if any, or if pipeline components are imported by tests that then fail gracefully
+fastapi
+uvicorn
+PyYAML
+sentencepiece # often a dep for text processing in NLP
+coloredlogs
+requests # for any network calls in tests
+vaderSentiment # Added for sentiment analysis
+# Basic dependencies for librosa, etc.
+scipy
+joblib
+decorator
+packaging
+MarkupSafe
+anyio # for asyncio testing utilities with pytest-asyncio
+# huggingface-hub # if small and only for model downloads, might be ok, but risky
+# tokenizers # by transformers, if transformers is removed, this too
+# transformers # Removing this as it's large
+# torch # REMOVING
+# torchaudio # REMOVING
+# speechbrain # REMOVING
+# faster-whisper # REMOVING
+# ctranslate2 # REMOVING
+# onnxruntime # REMOVING
+# Keep this for FastAPI/Starlette if needed by test client
+starlette
+click

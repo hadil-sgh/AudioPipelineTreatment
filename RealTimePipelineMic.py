@@ -27,39 +27,132 @@ for h in list(logging.getLogger().handlers):
         logging.getLogger().removeHandler(h)
 
 # ————————————————————————————————————————————————————————————————————————
-# 2) Real‑time pipeline with diarization + transcription + sentiment/emotion
+# 2) AudioPipeline Class
+# ————————————————————————————————————————————————————————————————————————
+class AudioPipeline:
+    def __init__(self, target_sr=16_000, chunk_duration=1.0):
+        self.audio_cap = AudioCapture()
+        self.target_sr = target_sr
+        self.resampler = None  # Will be initialized in start()
+        self.stt = SpeechToText(sample_rate=self.target_sr)
+        self.diar = SpeakerDiarization(
+            min_speech_duration=0.5,
+            threshold=0.03,
+            n_speakers=2,
+            process_buffer_duration=5.0,
+            device="cuda"  # Consider making this configurable
+        )
+        self.sentiment_analyzer = RealTimeSentimentAnalyzer(min_words=6)
+        self.voice_analyzer = voice_emotion_recognizer()
+        self.wav = None  # Optional: for saving output
+        self.elapsed_time = 0.0
+        self.chunk_duration = chunk_duration
+        self.speaker_audio_buffers = {}
+        self.logger = logging.getLogger(__name__)
+
+    async def start(self):
+        await self.audio_cap.start()
+        device_sr = self.audio_cap.sample_rate
+        if device_sr != self.target_sr:
+            self.resampler = torchaudio.transforms.Resample(device_sr, self.target_sr)
+        else:
+            self.resampler = None
+
+        # Optional: save to WAV
+        self.wav = wave.open("output.wav", "wb")
+        self.wav.setnchannels(1)
+        self.wav.setsampwidth(2)
+        self.wav.setframerate(self.target_sr)
+        self.logger.info("AudioPipeline started.")
+
+    async def process_audio_chunk(self):
+        chunk = self.audio_cap.get_audio_chunk(min_samples=self.target_sr)
+        if chunk is None:
+            await asyncio.sleep(0.05)
+            return None
+
+        # Resample & normalize
+        if chunk.dtype != np.float32:
+            chunk = chunk.astype(np.float32)
+        tensor = torch.from_numpy(chunk).unsqueeze(0)
+
+        if self.resampler:
+            audio16 = self.resampler(tensor).squeeze(0).numpy()
+        else:
+            audio16 = tensor.squeeze(0).numpy()
+
+        audio16 /= np.max(np.abs(audio16)) or 1.0
+
+        # Write to WAV
+        if self.wav:
+            self.wav.writeframes((audio16 * 32767).astype(np.int16).tobytes())
+
+        # Feed diarization & STT
+        await self.diar.process_audio(audio16)
+        await self.stt.process_audio(audio16)
+
+        # Fetch new transcriptions & analyze
+        new_segs = self.stt.get_all_transcriptions()
+        results = []
+        if new_segs:
+            for text in new_segs:
+                spk = self.diar.get_current_speaker()
+                if spk is None:
+                    self.logger.warning("No speaker identified for a segment.")
+                    continue
+
+                # Accumulate audio for current speaker
+                if spk not in self.speaker_audio_buffers:
+                    self.speaker_audio_buffers[spk] = []
+                self.speaker_audio_buffers[spk].extend(audio16)
+
+                # Analyze sentiment
+                sentiment_result = self.sentiment_analyzer.analyze(text)
+
+                # Analyze voice emotion
+                if len(self.speaker_audio_buffers[spk]) >= self.target_sr:  # At least 1 second of audio
+                    voice_result = self.voice_analyzer.analyze(np.array(self.speaker_audio_buffers[spk]))
+                    self.speaker_audio_buffers[spk] = []  # Reset buffer
+                else:
+                    voice_result = {
+                        "voice": {
+                            "emotion": "NATURAL", # Default if not enough audio
+                            "score": 0.5,
+                            "features": {"pitch": 0.0, "energy": 0.0, "speaking_rate": 0.0}
+                        }
+                    }
+
+                ts_str = time.strftime('%H:%M:%S', time.gmtime(self.elapsed_time))
+                structured_output = {
+                    "timestamp": ts_str,
+                    "speaker": f"SPEAKER_{spk:02d}",
+                    "text": text,
+                    "sentiment": sentiment_result,
+                    "voice_analysis": voice_result
+                }
+                results.append(structured_output)
+                self.logger.info(f"Processed segment: {structured_output}")
+
+            self.elapsed_time += self.chunk_duration # Increment elapsed time
+            self.stt.reset() # Reset STT for next segment group
+
+        return results if results else None
+
+    async def stop(self):
+        await self.audio_cap.stop()
+        if self.wav:
+            self.wav.close()
+        if self.diar.device == "cuda":
+            torch.cuda.empty_cache()
+        self.logger.info("AudioPipeline stopped.")
+
+# ————————————————————————————————————————————————————————————————————————
+# 3) Main execution logic
 # ————————————————————————————————————————————————————————————————————————
 async def main():
-    # 2.1 Initialize capture, STT, Diarization, and Analysis components
-    audio_cap = AudioCapture()
-    await audio_cap.start()
-    device_sr = audio_cap.sample_rate
+    pipeline = AudioPipeline()
+    await pipeline.start()
 
-    # Resample to 16 kHz (model's expected rate)
-    target_sr = 16_000
-    resampler = torchaudio.transforms.Resample(device_sr, target_sr)
-    stt = SpeechToText(sample_rate=target_sr)
-
-    # Diarization: tune threshold & buffer for your use case
-    diar = SpeakerDiarization(
-        min_speech_duration=0.5,
-        threshold=0.03,
-        n_speakers=2,
-        process_buffer_duration=5.0,
-        device="cuda"
-    )
-
-    # Initialize sentiment and emotion analyzers
-    sentiment_analyzer = RealTimeSentimentAnalyzer(min_words=6)
-    voice_analyzer = voice_emotion_recognizer()
-
-    # Optional: save to WAV
-    wav = wave.open("output.wav", "wb")
-    wav.setnchannels(1)
-    wav.setsampwidth(2)
-    wav.setframerate(target_sr)
-
-    # Setup Ctrl+C handler
     stop = False
     def on_sigint(sig, frame):
         nonlocal stop
@@ -68,80 +161,20 @@ async def main():
 
     print("[Pipeline] Started — press Ctrl+C to stop")
 
-    # Clock to track elapsed time
-    elapsed = 0.0
-    chunk_duration = 1.0  # seconds per chunk
-    
-    # Buffer for accumulating audio per speaker
-    speaker_audio_buffers = {}
-
     try:
         while not stop:
-            chunk = audio_cap.get_audio_chunk(min_samples=target_sr)
-            if chunk is None:
-                await asyncio.sleep(0.05)
-                continue
-
-            # 2.2 Resample & normalize
-            if chunk.dtype != np.float32:
-                chunk = chunk.astype(np.float32)
-            tensor = torch.from_numpy(chunk).unsqueeze(0)
-            audio16 = resampler(tensor).squeeze(0).numpy()
-            audio16 /= np.max(np.abs(audio16)) or 1.0
-
-            # 2.3 Write to WAV
-            wav.writeframes((audio16 * 32767).astype(np.int16).tobytes())
-
-            # 2.4 Feed diarization & STT
-            await diar.process_audio(audio16)
-            await stt.process_audio(audio16)
-
-            # 2.5 Fetch new transcriptions & analyze
-            new_segs = stt.get_all_transcriptions()
-            if new_segs:
-                for text in new_segs:
-                    spk = diar.get_current_speaker()
-                    if spk is None:
-                        continue
-                        
-                    # Accumulate audio for current speaker
-                    if spk not in speaker_audio_buffers:
-                        speaker_audio_buffers[spk] = []
-                    speaker_audio_buffers[spk].extend(audio16)
-                    
-                    # Analyze sentiment
-                    sentiment_result = sentiment_analyzer.analyze(text)
-                    
-                    # Analyze voice emotion if we have enough audio
-                    if len(speaker_audio_buffers[spk]) >= target_sr:  # At least 1 second of audio
-                        voice_result = voice_analyzer.analyze(np.array(speaker_audio_buffers[spk]))
-                        speaker_audio_buffers[spk] = []  # Reset buffer
-                    else:
-                        voice_result = {
-                            "voice": {
-                                "emotion": "NATURAL",
-                                "score": 0.5,
-                                "features": {"pitch": 0.0, "energy": 0.0, "speaking_rate": 0.0}
-                            }
-                        }
-                    
-                    # Print results
-                    ts_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
-                    print(f"\n{ts_str} | SPEAKER_{spk:02d} | {text}")
-                    print(f"⚠️ [{ts_str}] {voice_result['voice']['emotion']} (score={voice_result['voice']['score']:.2f})")
-                    print(f"   Text: {sentiment_result['sentiment']}, Voice: {voice_result['voice']['emotion']}")
-                    print(f"   Voice features - Pitch: {voice_result['voice']['features']['pitch']:.2f}, "
-                          f"Energy: {voice_result['voice']['features']['energy']:.2f}, "
-                          f"Rate: {voice_result['voice']['features']['speaking_rate']:.2f}")
-                    
-                elapsed += chunk_duration
-                stt.reset()
-
+            processed_data = await pipeline.process_audio_chunk()
+            if processed_data:
+                for data_item in processed_data:
+                    # Instead of printing, this data can be sent to an API, database, etc.
+                    logging.info(f"Structured output: {data_item}")
+            else:
+                # Small sleep if no new data to prevent tight loop if get_audio_chunk returns None quickly
+                await asyncio.sleep(0.01)
+    except Exception as e:
+        logging.error(f"Error in main loop: {e}", exc_info=True)
     finally:
-        await audio_cap.stop()
-        wav.close()
-        if diar.device == "cuda":
-            torch.cuda.empty_cache()
+        await pipeline.stop()
         print("[Pipeline] Stopped — logs in pipeline.log")
 
 if __name__ == "__main__":

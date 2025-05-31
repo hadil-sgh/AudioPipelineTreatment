@@ -20,13 +20,16 @@ def test_realtime_sentiment():
     print("🔍 Starting real-time sentiment test...\n")
     for text in simulated_transcription:
         result = analyzer.analyze(text)
-        print(f"🗣️ Text: {result['text']}")
+        # Use the 'text' variable from the loop instead of trying to get it from 'result'
+        print(f"🗣️ Text: {text}")
         print(f"📊 Sentiment: {result['sentiment']} (compound={result['compound']:.3f})\n")
         time.sleep(1)  # Simulates delay between real-time utterances
 
-    print("✅ Done. Full history:\n")
-    for entry in analyzer.get_history():
-        print(entry)
+    # The RealTimeSentimentAnalyzer class provided does not have a get_history method.
+    # Commenting out this section.
+    # print("✅ Done. Full history:\n")
+    # for entry in analyzer.get_history():
+    #     print(entry)
 
 if __name__ == "__main__":
     test_realtime_sentiment()

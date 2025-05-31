@@ -1,0 +1,50 @@
+pytest
+pytest-asyncio
+numpy
+soundfile
+torch
+torchaudio
+sounddevice
+faster-whisper
+speechbrain
+transformers
+librosa
+numba
+# Required by fastapi/starlette, but good to have for general testing if http calls are made
+requests
+# For pydantic models used in pipeline/main.py
+pydantic
+# For main.py itself
+fastapi
+uvicorn
+# From original requirements, might be important for speechbrain or others
+PyYAML
+sentencepiece
+# For colored logs, often used in test outputs or by underlying libs
+coloredlogs
+# Faster whisper deps
+ctranslate2
+# Librosa deps
+scipy
+# General utility often needed
+joblib
+decorator
+packaging
+# For HyperPyYAML if used by speechbrain configs
+MarkupSafe
+# For AudioCapture, if it uses wave module directly for something not covered by soundfile/sounddevice
+# wave is standard lib
+# For SpeakerDiarization, if it uses specific features
+# For RealTimeSentimentAnalyzer, if it uses specific features
+# For voice_emotion_recognizer, if it uses specific features
+
+# Keeping some indirect but potentially important ones from the original list that are not huge
+anyio # for asyncio testing utilities with pytest-asyncio
+huggingface-hub # speechbrain or transformers might pull models from here
+safetensors # often used with huggingface models
+tokenizers # by transformers
+starlette # by fastapi
+click # by uvicorn/fastapi or other CLIs
+# Removing the very large ones like cupy-cuda12x, av, onnxruntime (unless faster-whisper strictly needs full onnxruntime with providers)
+# faster-whisper might need onnxruntime, let's keep a basic onnxruntime
+onnxruntime
