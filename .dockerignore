@@ -1,0 +1,116 @@
+# Git
+.git/
+.gitignore
+README.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.mypy_cache
+.pytest_cache
+.hypothesis
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+Scripts/
+Lib/
+Include/
+pyvenv.cfg
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Large files and models
+*.wav
+*.mp3
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+*.webm
+*.m4a
+*.flac
+*.ogg
+*.wma
+*.aac
+models/
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.pkl
+*.joblib
+
+# Temporary files
+temp/
+tmp/
+logs/
+*.tmp
+*.temp
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+docs/
+*.md
+*.rst
+
+# Data files (often large)
+data/
+datasets/
+*.csv
+*.json
+*.xml
+*.parquet
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Testing artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml

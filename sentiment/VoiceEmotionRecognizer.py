@@ -9,7 +9,8 @@ import librosa
 from scipy.signal import find_peaks
 import gc
 
-class voice_emotion_recognizer:
+class VoiceEmotionRecognizer:
+
     def __init__(
         self,
         voice_model_name: str = "harshit345/xlsr-wav2vec-speech-emotion-recognition"

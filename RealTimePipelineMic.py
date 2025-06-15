@@ -11,7 +11,7 @@ from capture.audio_capture import AudioCapture
 from transcription.speech_to_text import SpeechToText
 from diarization.speaker_diarization import SpeakerDiarization
 from sentiment.SentimentFromTrans import RealTimeSentimentAnalyzer
-from sentiment.voice_emotion_recognizer import voice_emotion_recognizer
+from sentiment.VoiceEmotionRecognizer import VoiceEmotionRecognizer
 
 # ————————————————————————————————————————————————————————————————————————
 # 1) Route all logs to file (pipeline.log); only transcripts print to console
@@ -51,7 +51,7 @@ async def main():
 
     # Initialize sentiment and emotion analyzers
     sentiment_analyzer = RealTimeSentimentAnalyzer(min_words=6)
-    voice_analyzer = voice_emotion_recognizer()
+    voice_analyzer = VoiceEmotionRecognizer()
 
     # Optional: save to WAV
     wav = wave.open("output.wav", "wb")

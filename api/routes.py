@@ -8,7 +8,7 @@ import numpy as np
 from capture.audio_capture import AudioCapture
 from diarization.speaker_diarization import SpeakerDiarization
 from transcription.speech_to_text import SpeechToText
-from sentiment.voice_emotion_recognizer import SentimentAnalyzer
+from sentiment.VoiceEmotionRecognizer import SentimentAnalyzer
 
 router = APIRouter()
 
