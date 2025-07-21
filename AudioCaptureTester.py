@@ -18,7 +18,7 @@ class AudioCaptureTester:
         await self.capture.start()
 
         start_time = time.time()
-        duration = 120  # seconds
+        duration = 60  # seconds
 
         try:
             while time.time() - start_time < duration:

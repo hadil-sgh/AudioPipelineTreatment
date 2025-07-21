@@ -44,7 +44,26 @@ class SpeechToText:
         """Preprocess audio for the model"""
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
-        audio = audio / np.max(np.abs(audio)) if np.max(np.abs(audio)) > 0 else audio
+        
+        # Remove DC offset
+        audio = audio - np.mean(audio)
+        
+        # Apply gentle noise gate to reduce background noise
+        noise_threshold = 0.01
+        audio[np.abs(audio) < noise_threshold] = 0
+        
+        # Normalize with better handling of quiet audio
+        max_val = np.max(np.abs(audio))
+        if max_val > 0:
+            # Use RMS-based normalization for better VAD detection
+            rms = np.sqrt(np.mean(audio**2))
+            if rms > 0:
+                # Target RMS of 0.1 for good VAD detection
+                target_rms = 0.1
+                audio = audio * (target_rms / rms)
+                # Prevent clipping
+                audio = np.clip(audio, -0.95, 0.95)
+        
         return audio
 
     def _stitch_transcriptions(self, new_transcription: str) -> str:
@@ -73,11 +92,12 @@ class SpeechToText:
                 audio = np.array(self.audio_buffer)
                 audio = self._preprocess_audio(audio)
                 
+                # Disable VAD for streaming - let the original pipeline logic handle it
                 segments, _ = self.model.transcribe(
                     audio,
                     beam_size=5,
-                    vad_filter=True,
-                    vad_parameters=dict(min_silence_duration_ms=500)
+                    vad_filter=False,  # Disable VAD completely for streaming
+                    language="en"
                 )
                 
                 transcription = " ".join([segment.text for segment in segments]).strip()
