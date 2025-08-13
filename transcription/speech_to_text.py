@@ -13,11 +13,11 @@ class SpeechToText:
         model_size: str = "base.en",
         device: str = "cuda",
         compute_type: str = "float16",
-        overlap_ratio: float = 0.5  # 50% overlap between chunks
+        min_audio_length: float = 3.0  # Minimum audio length in seconds to process
     ):
         self.sample_rate = sample_rate
         self.buffer_size = buffer_size
-        self.overlap_ratio = overlap_ratio
+        self.min_audio_length = min_audio_length
         
         # Initialize Whisper model
         self.model = WhisperModel(
@@ -40,50 +40,74 @@ class SpeechToText:
             torch.backends.cudnn.benchmark = True
             torch.cuda.empty_cache()
 
-    def _preprocess_audio(self, audio: np.ndarray) -> np.ndarray:
-        """Preprocess audio for the model"""
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
-        
-        # Remove DC offset
-        audio = audio - np.mean(audio)
-        
-        # Apply gentle noise gate to reduce background noise
-        noise_threshold = 0.01
-        audio[np.abs(audio) < noise_threshold] = 0
-        
-        # Normalize with better handling of quiet audio
-        max_val = np.max(np.abs(audio))
-        if max_val > 0:
-            # Use RMS-based normalization for better VAD detection
-            rms = np.sqrt(np.mean(audio**2))
-            if rms > 0:
-                # Target RMS of 0.1 for good VAD detection
-                target_rms = 0.1
-                audio = audio * (target_rms / rms)
-                # Prevent clipping
-                audio = np.clip(audio, -0.95, 0.95)
-        
-        return audio
-
-    def _stitch_transcriptions(self, new_transcription: str) -> str:
-        """Stitch overlapping transcriptions using text similarity"""
-        if not self.last_transcription:
-            return new_transcription
+    def _preprocess_audio(self, audio_data: np.ndarray) -> np.ndarray:
+        """Simple but effective audio preprocessing"""
+        try:
+            # Ensure float32
+            if audio_data.dtype != np.float32:
+                audio_data = audio_data.astype(np.float32)
             
-        matcher = SequenceMatcher(None, self.last_transcription, new_transcription)
-        match = matcher.find_longest_match(0, len(self.last_transcription), 0, len(new_transcription))
+            # Check for actual audio content
+            rms = np.sqrt(np.mean(audio_data**2))
+            if rms < 0.001:  # Very quiet audio
+                return np.zeros_like(audio_data)  # Return silence
+            
+            # Simple normalization
+            max_val = np.max(np.abs(audio_data))
+            if max_val > 0:
+                # Don't over-normalize quiet speech
+                if max_val < 0.1:
+                    audio_data = audio_data * (0.1 / max_val)
+                else:
+                    audio_data = audio_data * (0.8 / max_val)
+            
+            return audio_data
+        except:
+            return audio_data
+
+    def _filter_repetitions(self, text: str) -> str:
+        """Remove obvious repetitions that Whisper sometimes generates"""
+        if not text or len(text) < 10:
+            return text
         
-        if match.size > 10:  # Minimum overlap threshold
-            return self.last_transcription[:match.a] + new_transcription[match.b:]
-        else:
-            return self.last_transcription + " " + new_transcription
+        words = text.split()
+        if len(words) < 3:
+            return text
+        
+        # Check for word repeated many times
+        word_counts = {}
+        for word in words:
+            word_lower = word.lower()
+            word_counts[word_lower] = word_counts.get(word_lower, 0) + 1
+        
+        # If any single word appears more than 40% of the time, it's likely a repetition error
+        total_words = len(words)
+        for word, count in word_counts.items():
+            if count > max(3, total_words * 0.4):  # More than 40% or more than 3 times
+                # This is likely a Whisper hallucination
+                return ""  # Return empty to skip this transcription
+        
+        # Check for phrase repetitions (like "is there is there is there")
+        if len(words) > 6:
+            # Look for 2-word phrases repeated
+            for i in range(len(words) - 3):
+                phrase = f"{words[i]} {words[i+1]}"
+                phrase_count = 0
+                for j in range(i, len(words) - 1):
+                    if j + 1 < len(words) and f"{words[j]} {words[j+1]}" == phrase:
+                        phrase_count += 1
+                
+                if phrase_count > 3:  # Same 2-word phrase appears 4+ times
+                    return ""  # Skip this transcription
+        
+        return text
 
     async def process_audio(self, audio_chunk: np.ndarray):
         """Process incoming audio chunk"""
         self.audio_buffer.extend(audio_chunk)
         
-        if len(self.audio_buffer) >= self.sample_rate * 2:
+        # Only process when we have enough audio
+        if len(self.audio_buffer) >= self.sample_rate * self.min_audio_length:
             if self.is_processing:
                 return
             
@@ -92,23 +116,39 @@ class SpeechToText:
                 audio = np.array(self.audio_buffer)
                 audio = self._preprocess_audio(audio)
                 
-                # Disable VAD for streaming - let the original pipeline logic handle it
+                # Check if audio has meaningful content
+                if np.sqrt(np.mean(audio**2)) < 0.005:  # Too quiet
+                    self.audio_buffer = []  # Clear buffer
+                    return
+                
+                # Transcribe with conservative settings
                 segments, _ = self.model.transcribe(
                     audio,
-                    beam_size=5,
-                    vad_filter=False,  # Disable VAD completely for streaming
-                    language="en"
+                    beam_size=1,  # Use beam_size=1 for less hallucination
+                    vad_filter=True,
+                    vad_parameters=dict(
+                        min_silence_duration_ms=1000,  # Longer silence detection
+                        min_speech_duration_ms=500     # Minimum speech duration
+                    ),
+                    language="en",
+                    condition_on_previous_text=False,  # DON'T condition on previous text
+                    no_speech_threshold=0.6,  # Higher threshold to avoid hallucinations
+                    temperature=0.0  # Deterministic output
                 )
                 
                 transcription = " ".join([segment.text for segment in segments]).strip()
                 
-                if transcription:
-                    stitched = self._stitch_transcriptions(transcription)
-                    self.transcription_buffer.append(stitched)
-                    self.last_transcription = stitched
+                # Apply repetition filter
+                transcription = self._filter_repetitions(transcription)
                 
-                overlap_samples = int(len(self.audio_buffer) * self.overlap_ratio)
-                self.audio_buffer = self.audio_buffer[-overlap_samples:]
+                if transcription and len(transcription) > 5:
+                    # Simple deduplication: only add if it's different from last result
+                    if transcription != self.last_transcription:
+                        self.transcription_buffer.append(transcription)
+                        self.last_transcription = transcription
+                
+                # Clear buffer after processing
+                self.audio_buffer = []
                 
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

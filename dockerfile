@@ -47,7 +47,7 @@ RUN pip install torch==2.1.0 torchaudio==2.1.0 --index-url https://download.pyto
 
 # Copy files and install requirements
 COPY --chown=app:app requirements*.txt /app/
-COPY --chown=app:app start_enhanced_pipeline.py /app/
+COPY --chown=app:app main.py /app/
 RUN pip install --no-cache-dir -r /app/requirements2.txt
 RUN if [ -f /app/requirements.enhanced.txt ]; then \
     pip install --no-cache-dir -r /app/requirements.enhanced.txt; \
@@ -131,7 +131,7 @@ RUN pip install torch==2.1.0+cpu torchaudio==2.1.0+cpu --index-url https://downl
 
 # Copy files and install requirements
 COPY --chown=app:app requirements*.txt /app/
-COPY --chown=app:app start_enhanced_pipeline.py /app/
+COPY --chown=app:app main.py /app/
 RUN pip install --no-cache-dir -r /app/requirements2.txt
 RUN if [ -f /app/requirements.enhanced.txt ]; then \
     pip install --no-cache-dir -r /app/requirements.enhanced.txt; \
