@@ -1,8 +1,3 @@
-"""
-Enhanced Web Real-time Audio Pipeline
-Integrates RealTimePipelineMic.py components with WebSocket for frontend communication
-"""
-
 import asyncio
 import logging
 import wave
