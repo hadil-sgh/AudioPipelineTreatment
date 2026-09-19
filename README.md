@@ -1,3 +1,5 @@
+
+
 # 🎯 AI-Powered Real-Time Audio Analysis Pipeline
 
 A comprehensive **FastAPI-based real-time audio processing system** designed for live customer service call analysis. This system provides real-time speaker diarization, transcription, sentiment analysis, and emotion recognition with WebSocket streaming capabilities.
@@ -134,7 +136,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 #### **Message Format - Incoming (Audio Data)**
 ```json
 {
-  "type": "audio",
+  "type": "audio_chunk",
   "data": "base64-encoded-audio-chunk",
   "sampleRate": 16000,
   "channels": 1
@@ -444,4 +446,4 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 **🎯 Need real-time analysis?** Connect to `ws://localhost:8000/ws` and start streaming audio data!
 
-**📊 Want to see it in action?** Check out the [Process Flow Documentation](PROCESS_FLOW_DOCUMENTATION.md) for detailed examples! 
+**📊 Want to see it in action?** Check out the [Process Flow Documentation](PROCESS_FLOW_DOCUMENTATION.md) for detailed examples!
